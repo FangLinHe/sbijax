@@ -59,9 +59,13 @@ class SNE(SBI, ABC):
                 sample_shape=(n_simulations_per_round,),
             )
         else:
+            n_chains = kwargs.pop("n_chains", 1)
+            n_warmup = kwargs.pop("n_warmup", 0)
+            # def sample_posterior(self, params, n_chains, n_samples, n_warmup, **kwargs)
             new_thetas, diagnostics = self.sample_posterior(
-                params, n_simulations_per_round, **kwargs
+                params, n_chains, n_simulations_per_round, n_warmup, **kwargs
             )
+            new_thetas = new_thetas.reshape([-1, new_thetas.shape[-1]])
 
         new_obs = self.simulator_fn(seed=next(self._rng_seq), theta=new_thetas)
         new_data = named_dataset(new_obs, new_thetas)

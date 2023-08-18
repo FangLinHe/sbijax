@@ -91,8 +91,7 @@ class SNL(SNE):
             self._simulate_new_data_and_append,
             n_simulations_per_round=n_simulations_per_round,
             n_chains=n_chains,
-            n_samples=n_samples,
-            n_warmup=n_warmup,
+            n_warmup=int(n_simulations_per_round * n_warmup / n_samples),
         )
         D, params, all_diagnostics, all_losses, all_params = (
             None,
@@ -128,7 +127,7 @@ class SNL(SNE):
         params: pytree
             a pytree of parameter for the model
         n_chains: int
-        number of chains to sample
+            number of chains to sample
         n_samples: int
             number of samples per chain
         n_warmup: int
@@ -147,6 +146,7 @@ class SNL(SNE):
             (n_samples \times p)
         """
 
+        # Function used to get log likelihood given theta
         part = partial(
             self.model.apply, params=params, method="log_prob", y=self.observed
         )
