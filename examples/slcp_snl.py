@@ -150,7 +150,7 @@ def run(use_surjectors):
     snl = SNL(fns, model)
     optimizer = optax.adam(1e-3)
     params, info = snl.fit(
-        random.PRNGKey(23), y_observed, optimizer, n_rounds=10
+        random.PRNGKey(23), y_observed, optimizer, n_rounds=10, sampler="slice"
     )
 
     snl_samples, _ = snl.sample_posterior(params, 20, 50000, 10000)
