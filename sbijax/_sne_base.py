@@ -1,4 +1,5 @@
 from abc import ABC
+from absl import logging
 from typing import Iterable
 
 from jax import numpy as jnp
@@ -59,13 +60,17 @@ class SNE(SBI, ABC):
                 sample_shape=(n_simulations_per_round,),
             )
         else:
+            logging.debug(f"Start sampling posterior; kwargs: {kwargs}")
             new_thetas, diagnostics = self.sample_posterior(
                 params=params,
                 n_simulations_per_round=n_simulations_per_round,
                 **kwargs,
             )
+            logging.debug(f"Done sampling posterior.")
 
+        logging.debug(f"Start simulation")
         new_obs = self.simulator_fn(seed=next(self._rng_seq), theta=new_thetas)
+        logging.debug(f"Done simulation")
         new_data = named_dataset(new_obs, new_thetas)
         if D is None:
             d_new = new_data

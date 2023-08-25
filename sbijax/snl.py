@@ -223,13 +223,13 @@ class SNL(SNE):
                 batch = self._train_iter(j)
                 batch_loss, params, state = step(params, state, **batch)
                 train_loss += batch_loss
-            print(train_loss)
             validation_loss = self._validation_loss(params)
+            logging.debug(f"Iter: {i}, train_loss: {train_loss}, val_loss: {validation_loss}")
             losses[i] = jnp.array([train_loss, validation_loss])
 
             _, early_stop = early_stop.update(validation_loss)
             if early_stop.should_stop:
-                logging.info("early stopping criterion found")
+                logging.info(f"early stopping criterion found at iter {i}")
                 break
 
         losses = jnp.vstack(losses)[:i, :]

@@ -16,7 +16,6 @@ import pandas as pd
 import seaborn as sns
 from jax import numpy as jnp
 from jax import random
-from jax import scipy as jsp
 from jax import vmap
 from surjectors import Chain, TransformedDistribution
 from surjectors.bijectors.masked_autoregressive import MaskedAutoregressive
@@ -31,73 +30,75 @@ from sbijax import SNL
 from sbijax.mcmc.slice import sample_with_slice
 
 
-# FORMAT = "%(name)s %(levelname)% %(asctime)-15s %(message)s"
-# logging.basicConfig(format=FORMAT, level=logging.INFO, datefmt='%Y-%m-%d %H:%M:%S')
 logging.set_verbosity(logging.DEBUG)
-# handler = logging.get_absl_handler()
-# formatter = logging.PythonFormatter(
-#     fmt="%(asctime)s: %(module)s.%(funcName)s +%(lineno)s: %(levelname)-8s %(message)s",
-#     datefmt="%H:%M:%S"
-# )
-# handler.setFormatter(formatter)
-# logging.use_absl_handler()
+
+seed = random.PRNGKey(23)
+
+D = 10  # Dimension of data vector
+L = 5  # Dimension of latent variable
+
+"""
+Hardcode mu_0, Sigma_0, W, mu, and Psi for now.
+
+Prior: p(z) = N(z | mu_0, Sigma_0)
+Likelihood: N(x | Wz + mu, Psi)
+
+Only z is learnable.
+"""
+mu_0 = jnp.zeros((L,))
+Sigma_0 = 0.2 * jnp.eye(L)
+W = jax.random.uniform(seed, shape=(D, L), minval=-3, maxval=3)
+mu = jax.random.uniform(seed, shape=(D,), minval=-3, maxval=3)
+Psi = 0.2 * jnp.eye(D)
+
 
 def prior_model_fns():
-    p = distrax.Independent(
-        distrax.Uniform(jnp.full(5, -3.0), jnp.full(5, 3.0)), 1
-    )
+    """
+    Prior: p(z) = N(z | mu_0, Sigma_0)
+
+    mu_0 and Sigma_0 are hardcoded
+    """
+    p = distrax.MultivariateNormalFullCovariance(mu_0, Sigma_0)
     return p.sample, p.log_prob
 
 
-def likelihood_fn(theta, y):
-    mu = jnp.tile(theta[:2], 4)
-    s1, s2 = theta[2] ** 2, theta[3] ** 2
-    corr = s1 * s2 * jnp.tanh(theta[4])
-    cov = jnp.array([[s1**2, corr], [corr, s2**2]])
-    cov = jsp.linalg.block_diag(*[cov for _ in range(4)])
-    p = distrax.MultivariateNormalFullCovariance(mu, cov)
-    return p.log_prob(y)
+def likelihood_fn(theta, x):
+    """
+    Likelihood: N(x | Wz + mu, Psi)
+
+    x is the data, z is the learnable parameters theta without any transformation
+
+    z is theta
+    z has shape [batch_size, 5]
+    expected shape of loc [batch_size, 10]
+    """
+    z = theta
+
+    loc = W @ z + mu
+    p = distrax.MultivariateNormalFullCovariance(loc, Psi)
+    return p.log_prob(x)
 
 
 def simulator_fn(seed, theta):
-    orig_shape = theta.shape
-    if theta.ndim == 2:
-        theta = theta[:, None, :]
-    us_key, noise_key = random.split(seed)
+    """
+    Simulator function takes parameters theta and returns a sampled data
 
-    def _unpack_params(ps):
-        m0 = ps[..., [0]]
-        m1 = ps[..., [1]]
-        s0 = ps[..., [2]] ** 2
-        s1 = ps[..., [3]] ** 2
-        r = np.tanh(ps[..., [4]])
-        return m0, m1, s0, s1, r
+    z is theta
+    z has shape [batch_size, 5]
+    W has shape [10, 5]
+    mu has shape [10]
+    expected shape of mu [batch_size, 10]
+    """
 
-    m0, m1, s0, s1, r = _unpack_params(theta)
+    z = theta
+    assert len(z.shape) == 2
 
-    # Question: why not directly use distrax.MultivariateNormal?
-    us = distrax.Normal(0.0, 1.0).sample(
-        seed=us_key, sample_shape=(theta.shape[0], theta.shape[1], 4, 2)
-    )
-    xs = jnp.empty_like(us)
-    xs = xs.at[:, :, :, 0].set(s0 * us[:, :, :, 0] + m0)
-    y = xs.at[:, :, :, 1].set(
-        s1 * (r * us[:, :, :, 0] + np.sqrt(1.0 - r**2) * us[:, :, :, 1]) + m1
-    )
-    if len(orig_shape) == 2:
-        y = y.reshape((*theta.shape[:1], 8))
-    else:
-        y = y.reshape((*theta.shape[:2], 8))
+    loc = jnp.swapaxes(W @ z.T + mu.reshape([-1, 1]), 0, 1)
+    p = distrax.MultivariateNormalFullCovariance(loc, Psi)
 
-    return y
+    x = p.sample(seed=random.split(seed)[0])
 
-    # sim_mean = jnp.moveaxis(jnp.array([m0, m1]), 1, 0).squeeze()
-    # sim_sigma = jnp.moveaxis(jnp.array([[s0 ** 2, r * s0 * s1], [r * s0 * s1, s1 ** 2]]), 2, 0).squeeze()
-    # sim_p = distrax.MultivariateNormalFullCovariance(sim_mean, sim_sigma)
-    # y = jnp.swapaxes(sim_p._sample_n(us_key, 4), 1, 0)  # (4, 1000, 2) --> (1000, 4, 2)
-    # y = y.reshape((*theta.shape[:len(orig_shape)-1], -1))
-
-    # return y
+    return x
 
 
 def make_model(dim, use_surjectors):
@@ -171,38 +172,38 @@ def make_model(dim, use_surjectors):
     return td
 
 
-def run(use_surjectors):
-    len_theta = 5
-    # this is the thetas used in SNL
-    # thetas = jnp.array([-0.7, -2.9, -1.0, -0.9, 0.6])
-    y_observed = jnp.array(
-        [
-            [
-                -0.9707123,
-                -2.9461224,
-                -0.4494722,
-                -3.4231849,
-                -0.13285634,
-                -3.364017,
-                -0.85367596,
-                -2.4271638,
-            ]
-        ]
+def generate_observations(
+    n_observations: int, expected_z: jnp.array, noise_level: float = 1.0
+) -> jnp.array:
+    noise = distrax.Uniform(-noise_level, noise_level).sample(
+        seed=random.split(seed)[0], sample_shape=(n_observations, D)
     )
+    y_observed = W @ expected_z + mu + noise
+
+    return y_observed
+
+
+def run(use_surjectors):
+    len_theta = L
+    n_observations = 4
+    expected_z = jnp.array([-4.0, 3.5, 2.7, -0.8, 1.2])
+
+    y_observed = generate_observations(n_observations, expected_z, 2.0)
 
     prior_simulator_fn, prior_fn = prior_model_fns()
     fns = (prior_simulator_fn, prior_fn), simulator_fn
 
     def log_density_fn(theta, y):
         prior_lp = prior_fn(theta)
-        # likelihood_lp is N(x_j | m_theta, S_theta), for j in [0, 1, 2, 3]
         likelihood_lp = likelihood_fn(theta, y)
 
         lp = jnp.sum(prior_lp) + jnp.sum(likelihood_lp)
         return lp
 
     log_density_partial = partial(log_density_fn, y=y_observed)
-    log_density = lambda x: vmap(log_density_partial)(x)
+
+    def log_density(x):
+        return vmap(log_density_partial)(x)
 
     model = make_model(y_observed.shape[1], use_surjectors)
     snl = SNL(fns, model)
@@ -211,10 +212,10 @@ def run(use_surjectors):
         random.PRNGKey(23),
         y_observed,
         optimizer,
-        n_rounds=5,
-        n_samples=10000,
+        n_rounds=2,
+        n_samples=100,
         max_n_iter=100,
-        n_warmup=2500,
+        n_warmup=25,
         batch_size=64,
         n_early_stopping_patience=5,
         sampler="slice",
@@ -227,14 +228,28 @@ def run(use_surjectors):
     snl_samples, _ = snl.sample_posterior(params, 4, 5000, 2500)
 
     g = sns.PairGrid(pd.DataFrame(slice_samples))
-    g.map_upper(sns.scatterplot, color="black", marker=".", edgecolor=None, s=2)
-    g.map_diag(plt.hist, color="black")
+    g.map_upper(
+        sns.scatterplot, color="darkgrey", marker=".", edgecolor=None, s=2
+    )
+    g.map_diag(plt.hist, color="darkgrey")
     for ax in g.axes.flatten():
         ax.set_xlim(-5, 5)
         ax.set_ylim(-5, 5)
     g.fig.set_figheight(5)
     g.fig.set_figwidth(5)
-    plt.show()
+    plt.show(block=False)
+
+    g = sns.PairGrid(pd.DataFrame(snl_samples))
+    g.map_upper(
+        sns.scatterplot, color="darkblue", marker=".", edgecolor=None, s=2
+    )
+    g.map_diag(plt.hist, color="darkblue")
+    for ax in g.axes.flatten():
+        ax.set_xlim(-5, 5)
+        ax.set_ylim(-5, 5)
+    g.fig.set_figheight(5)
+    g.fig.set_figwidth(5)
+    plt.show(block=False)
 
     fig, axes = plt.subplots(len_theta, 2)
     for i in range(len_theta):
@@ -246,7 +261,7 @@ def run(use_surjectors):
             axes[i, j].set_xlim(-5, 5)
     sns.despine()
     plt.tight_layout()
-    plt.show()
+    plt.show(block=True)
 
 
 if __name__ == "__main__":
