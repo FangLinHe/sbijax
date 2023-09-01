@@ -104,6 +104,10 @@ class SNL(SNE):
         )
         for _ in range(n_rounds):
             D, diagnostics = simulator_fn(params, D, **kwargs)
+
+            # Update dataset
+            self.data = D
+
             self._train_iter, self._val_iter = self.as_iterators(
                 D, batch_size, percentage_data_as_validation_set
             )
